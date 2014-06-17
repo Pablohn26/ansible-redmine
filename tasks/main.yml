@@ -1,47 +1,183 @@
 ---
 - name: install epel repo
-  action: yum pkg=$item state=present
-  with_items:
-    - epel-release
+  command: yum install -y http://download.fedoraproject.org/pub/epel/6/{{ ansible_architecture }}/epel-release-6-8.noarch.rpm
+  ignore_errors: yes
+- name: required packages (to run next command)
+  action: yum pkg=libselinux-python state=present
+  
+- name: install MariaDB Repo
+  copy: src=mariadb.repo dest=/etc/yum.repos.d owner=root group=root mode=0644
 
 - name: required packages
-  action: yum pkg=$item state=present
+  action: yum pkg={{ item }} state=present
   with_items:
     - etckeeper
     - git
     - libxml2-devel
     - ImageMagick-devel
     - MySQL-python
-    - httpd
     - mysql-devel
     - mysql
     - mysql-server
+    - gcc 
+    - gcc-c++
+    - zlib-devel
+    - ruby-devel
+    - rubygems 
+    - ruby-libs 
+    - apr-devel 
+    - apr-util-devel 
+    - automake 
+    - autoconf 
+    - ImageMagick 
+    - ImageMagick-devel 
+    - curl-devel
+    - openssl-devel
+    - apr-util-devel
+    - ruby-devel
+
 
 - name: enable http
   command: lokkit -s http --enabled
 
-- name: ensure services are enabled and started
-  service: name=$item state=started enabled=yes
-  with_items:
-    - httpd
-    - mysqld
+#- name: ensure services are enabled and started
+#  service: name=$item state=started enabled=yes
+#  with_items:
+#    - mysqld
 
 ###
-### setup mysql for redmine
+### Setup mysql for redmine
 ###
-- name: create db
-  mysql_db: db=${redmine_db} state=present
+
+
+- name: Start the MySQL service
+  action: service name=mysql state=started
+
+- name: copy .my.cnf file with root password credentials
+  template: src=templates/root/.my.cnf dest=/root/.my.cnf owner=root mode=0600
   notify:
-    - restart mysqld
+    - restart mariadb
+
+
+# 'localhost' needs to be the last item for idempotency, see
+# http://ansible.cc/docs/modules.html#mysql-user
+- name: update mysql root password for all root accounts
+  mysql_user: name=root host={{ item }} password={{ mariadb_root_password }} priv=*.*:ALL,GRANT
+  with_items:
+#    - "{{ ansible_hostname }}"
+#    - 127.0.0.1
+#    - ::1
+    - localhost
+
+- name: copy .my.cnf file with root password credentials
+  template: src=templates/root/.my.cnf dest=/root/.my.cnf owner=root mode=0600
+
+- name: create database
+  mysql_db: name={{ redmine_db }} state=present
 
 - name: create user for redmine db
   mysql_user: state=present name=${redmine_dbuser} password=${redmine_dbpass} priv=${redmine_db}.*:ALL
   notify:
-    - restart mysqld
+    - restart mariadb
+
+
+# 'localhost' needs to be the last item for idempotency, see
+# http://ansible.cc/docs/modules.html#mysql-user
+- name: update mysql root password for all root accounts
+  mysql_user: name=root host=$item password={{ mariadb_root_password }} login_password={{ mariadb_root_password }} login_user=root
+  with_items:
+    -"{{ ansible_hostname }}"
+    -127.0.0.1
+    - ::1
+    -localhost
+    
+- name: create database
+  mysql_db: name={{ redmine_db }} state=present
+
+- name: create user for redmine db
+  mysql_user: state=present name=${redmine_dbuser} password=${redmine_dbpass} priv=${redmine_db}.*:ALL
+  notify:
+    - restart mariadb
+
+- name: delete anonymous MySQL server user for $server_hostname
+  action: mysql_user user="" host="{{ server_hostname }}" state="absent"
+
+- name: delete anonymous MySQL server user for localhost
+  action: mysql_user user="" state="absent"
+
+- name: remove the MySQL test database
+  action: mysql_db db=test state=absent
 
 ###
-### download and install passenger
+### Download and install Ruby 1.9
 ###
+- name: required packages
+  action: yum pkg={{ item }} state=present
+  with_items:
+    - etckeeper
+    - patch 
+    - readline 
+    - readline-devel 
+    - zlib 
+    - zlib-devel
+    - libyaml-devel 
+    - libffi-devel 
+    - openssl-devel 
+    - bzip2 
+    - autoconf 
+    - automake 
+    - libtool 
+    - bison
+    - rvm
+
+#- name: install RVM 
+#  command: curl -L get.rvm.io | bash -s stable
+
+
+#~ - stat: path=/etc/profile.d/rvm.sh
+  #~ register: rvm_folder 
+  #~ 
+#~ - name: Install RVM
+  #~ shell: "curl -sSL https://get.rvm.io | bash -s --version 1.9.3 stable "
+  #~ when: rvm_folder.stat.isdir is not defined
+  
+#~ - name: download ruby source code
+  #~ get_url: url=https://ftp.ruby-lang.org/pub/ruby/stable-snapshot.tar.gz dest=/tmp/ruby.tar.gz mode=777  validate_certs=no
+#~ 
+#~ - name: make sure that the ruby-stable directory exsists
+  #~ action: file path=/opt/ruby-stable state=directory  
+    #~ 
+#~ - name: extracting...
+  #~ command: tar xvzf /tmp/ruby.tar.gz -C /opt/ruby-stable
+#~ 
+#~ - name: getting path 
+  #~ shell: ls -d /opt/ruby-stable/*
+  #~ register: ruby_dir
+#~ 
+#~ - name: configuring...
+  #~ command: chdir={{ ruby_dir.stdout }}  ./configure
+  #~ 
+#~ - name: making...
+  #~ command: chdir={{ ruby_dir.stdout }} make
+  #~ 
+#~ - name: installing rvm...
+  #~ command: chdir={{ ruby_dir.stdout }} make install
+
+- name: installing Ruby 
+  command: rvm install 1.9.3
+  environment:
+
+- name: setting default ruby version
+  command: rvm use 1.9.3 --default 
+
+
+###
+### Download and install passenger
+###
+
+- name: download passenger key file
+  command: rpm --import http://passenger.stealthymonkeys.com/RPM-GPG-KEY-stealthymonkeys.asc
+
 - name: download passenger release file
   get_url: url=http://passenger.stealthymonkeys.com/rhel/6/passenger-release.noarch.rpm dest=/tmp/passenger-release.noarch.rpm
 
@@ -49,30 +185,69 @@
   yum: name=/tmp/passenger-release.noarch.rpm state=present
   #command: rpm -ivH /tmp/passenger-release.noarch.rpm creates=/etc/yum.repos.d/passenger.repo
 
+#~ 
+#~ gem install capybara -v 2.1.0
+#~ 
+#~ gem install rake -v 10.1.1
+#~ 
+#~ gem install builder -v 3.0.0
+#~ 
+#~ gem install journey -v 1.0.4
+#~ 
+#~ gem install activemodel -v 3.2.18
+#~ 
+#~ gem install activesupport -v 3.2.18
+#~ 
+#~ gem install builder -v 3.0.0
+#~ 
+#~ gem install rack -v 1.4.5
+#~ 
+#~ gem install rack-cache -v 1.2
+#~ 
+#~ gem install sprockets -v 2.2.2
+
+
+
+- name: install passenger package
+  yum: pkg=passenger-standalone state=present
 - name: install mod passenger
-  yum: name=mod_passenger state=present
-  notify:
-    - restart httpd 
+  gem: name=passenger state=present version= 2.1.0 include_dependencies=yes 
+  
+- name: install bundler
+  gem: name=bundler state=latest include_dependencies=yes
+
+- name: install rails
+  gem: name=rails state=latest include_dependencies=yes
+
+- name: install capybara
+  gem: name=capybara state=latest include_dependencies=yes  
+  
+
+- name: install selenium-webdriver
+  gem: name=selenium-webdriver state=latest include_dependencies=yes
+  
+- name: updating gems
+  command: gem update
 
 ###
-### download and install redmine
+### Download and install redmine
 ###
 - name: clone redmine stable repo
-  git: repo=https://github.com/redmine/redmine.git dest=/var/www/redmine version=2.3-stable
+  git: repo=https://github.com/redmine/redmine.git dest=/var/www/redmine 
 
 - name: install redmine database.yml
   template: src=../templates/database.yml dest=/var/www/redmine/config/database.yml
 
-- name: install bundler
-  command: gem install bundler creates=/usr/bin/bundle
 
 - name: install dependancies for redmine
   command: bundle install --without development test chdir=/var/www/redmine
-
-- name: install redmine httpd conf
-  template: src=../templates/redmine.conf dest=/etc/httpd/conf.d/redmine.conf
-  notify:
-    - restart httpd
+  
+- name: create rake db
+  command: bundle exec rake db:create chdir=/var/www/redmine
+#- name: install redmine httpd conf
+#  template: src=../templates/redmine.conf dest=/etc/httpd/conf.d/redmine.conf
+#  notify:
+#    - restart httpd
 
 - name: generate secret token
   command: rake generate_secret_token chdir=/var/www/redmine
@@ -85,10 +260,10 @@
   with_items:
     - /var/www/redmine/tmp/cache
 
-- name: chown the redmine directory apache user and group
-  file: path=/var/www/redmine state=directory owner=apache group=apache recurse=yes
+#- name: chown the redmine directory apache user and group
+#  file: path=/var/www/redmine state=directory owner=apache group=apache recurse=yes
 
 - name: load default data into redmine
   command: rake redmine:load_default_data RAILS_ENV=production REDMINE_LANG=${redmine_lang} chdir=/var/www/redmine
-  notify:
-    - restart httpd
+#  notify:
+#    - restart httpd
